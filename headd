@@ -1,0 +1,93 @@
+#!/usr/bin/python
+
+import os, sys, signal
+import syslog
+import time
+
+rfile = '/proc/asound/card0/codec97#0/ac97#0-0+regs'
+reg ='0:6a'
+plugged = '8000'
+unplugged = '0000'
+
+try:
+    pid = os.fork( )
+    if pid > 0:
+        sys.exit(0) # Exit first parent.
+except OSError, e:
+    sys.stderr.write("fork #1 failed: (%d) %sn" % (e.errno, e.strerror))
+    sys.exit(1)
+# Decouple from parent environment.
+os.chdir("/")
+os.umask(0)
+os.setsid()
+# Perform second fork.
+try:
+    pid = os.fork( )
+    if pid > 0:
+        sys.exit(0) # Exit second parent.
+except OSError, e:
+    sys.stderr.write("fork #2 failed: (%d) %sn" % (e.errno, e.strerror))
+    sys.exit(1)
+# The process is now daemonized, redirect standard file descriptors.
+for f in sys.stdout, sys.stderr: f.flush( )
+si = file('/dev/null', 'r')
+so = file('/dev/null', 'a+')
+se = file('/dev/null', 'a+', 0)
+os.dup2(si.fileno( ), sys.stdin.fileno( ))
+os.dup2(so.fileno( ), sys.stdout.fileno( ))
+os.dup2(se.fileno( ), sys.stderr.fileno( ))
+
+pid = str(os.getpid())
+with open('/var/run/headd.pid', 'w') as pidfile:
+    pidfile.write(pid+'\n')
+pidfile.closed
+
+def delpid(a, b):
+    syslog.syslog('headd exiting')
+    os.remove('/var/run/headd.pid')
+    sys.exit()
+
+def switch(a, b):
+    os.system('amixer -q -c 0 cset numid='+str(a)+' '+str(b))
+
+signal.signal(signal.SIGTERM, delpid)
+
+# Check for the initial state of headphones
+syslog.syslog('starting headd with pid='+pid)
+regsfile = open(rfile)
+for line in regsfile:
+    line = line.strip()
+    if line.startswith(reg):
+        currstate = line
+        if currstate == reg + ' = ' + plugged:
+            switch(1, 0)
+            switch(3, 1)
+        elif currstate == reg + ' = ' + unplugged:
+            switch(1, 1)
+            switch(3, 0)
+regsfile.close
+time.sleep(2)
+
+# Main loop
+while True:
+    try:
+        regsfile = open(rfile)
+        for line in regsfile:
+                    line = line.strip()
+                    if line.startswith(reg):
+                        newstate = line
+        regsfile.close()
+        if newstate != currstate:
+            if newstate == reg + ' = ' + plugged:
+                switch(1, 0)
+                switch(3, 1)
+                currstate = newstate
+                syslog.syslog('headphones plugged in')
+            elif newstate == reg + ' = ' + unplugged:
+                switch(1, 1)
+                switch(3, 0)
+                currstate = newstate
+                syslog.syslog('headphones unplugged')
+        time.sleep(2)
+    except SystemExit:
+        raise
